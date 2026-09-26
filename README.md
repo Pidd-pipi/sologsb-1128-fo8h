@@ -61,7 +61,7 @@ sologsb-1128/
 | `/ports/:id` | 渔港详情：基本信息与补给能力、SVG 泊位网格（点击查看占用船舶）、在港船舶与近日流水 | 四个模型 |
 | `/vessels` | 渔船检索：按作业类型、主机功率区间、总吨位与船籍港组合查询 | FishingVessel |
 | `/vessels/:id` | 渔船档案详情：主尺度、主机功率、作业类型、证书有效期与进出港时间线 | FishingVessel、PortCall |
-| `/calls` | 进出港登记：选择渔船与类型，填写泊位号、加冰量、加油量、卸货量并同步泊位状态 | PortCall、Berth、FishingVessel |
+| `/calls` | 进出港登记：选择渔船与类型（进港 / 出港 / 移泊），进港填空闲泊位、出港填占用泊位，移泊从该船占用泊位选原泊位、从同港空闲泊位选新泊位；提交后同步泊位状态，移泊流水显示「B01→B02」 | PortCall、Berth、FishingVessel |
 | `/map` | 渔港与在港渔船分布：高德 JS API 标记，未配置 key 时为 SVG 网格视图，点选弹出泊位占用摘要 | FishingPort、Berth |
 
 ## 数据存储说明

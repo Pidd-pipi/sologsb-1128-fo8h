@@ -12,6 +12,7 @@ import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
 import { formatDateTime, formatNumber, percentText } from '../utils/format';
 import { supplyText } from '../types/port';
+import { callBerthLabel } from '../types/call';
 
 const route = useRoute();
 const router = useRouter();
@@ -38,7 +39,9 @@ const addBerthForm = reactive({ berthNo: '', designDepth: 4.5 });
 
 const recentCalls = computed(() => {
   const numbers = new Set(portBerths.value.map((b) => b.berthNo));
-  return portStore.callsSorted.filter((c) => numbers.has(c.berthNo)).slice(0, 8);
+  return portStore.callsSorted
+    .filter((c) => numbers.has(c.berthNo) || (c.type === '移泊' && (numbers.has(c.fromBerthNo ?? '') || numbers.has(c.toBerthNo ?? ''))))
+    .slice(0, 8);
 });
 
 const supply = computed(() => (port.value ? supplyText(port.value.supply) : '—'));
@@ -202,7 +205,9 @@ function onMapSelect(selectedPortId: string): void {
               <el-table-column label="时间" min-width="150">
                 <template #default="scope">{{ formatDateTime(scope.row.time) }}</template>
               </el-table-column>
-              <el-table-column prop="berthNo" label="泊位号" width="90" />
+              <el-table-column label="泊位号" min-width="100">
+                <template #default="scope">{{ callBerthLabel(scope.row) }}</template>
+              </el-table-column>
               <el-table-column label="卸货 kg" min-width="100">
                 <template #default="scope">{{ formatNumber(scope.row.unloadKg, 0) }}</template>
               </el-table-column>
