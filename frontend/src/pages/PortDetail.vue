@@ -12,6 +12,7 @@ import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
 import { formatDateTime, formatNumber, percentText } from '../utils/format';
 import { supplyText } from '../types/port';
+import { callBerthText } from '../types/call';
 
 const route = useRoute();
 const router = useRouter();
@@ -198,11 +199,19 @@ function onMapSelect(selectedPortId: string): void {
             <template #header><span class="card-title">近日流水</span></template>
             <el-table :data="recentCalls" size="small" border empty-text="暂无进出港流水">
               <el-table-column prop="vesselName" label="船名" min-width="120" />
-              <el-table-column prop="type" label="类型" width="80" />
+              <el-table-column label="类型" width="80">
+                <template #default="scope">
+                  <el-tag size="small" :type="scope.row.type === '进港' ? 'primary' : scope.row.type === '移泊' ? 'warning' : 'success'">
+                    {{ scope.row.type }}
+                  </el-tag>
+                </template>
+              </el-table-column>
               <el-table-column label="时间" min-width="150">
                 <template #default="scope">{{ formatDateTime(scope.row.time) }}</template>
               </el-table-column>
-              <el-table-column prop="berthNo" label="泊位号" width="90" />
+              <el-table-column label="泊位号" min-width="100">
+                <template #default="scope">{{ callBerthText(scope.row) }}</template>
+              </el-table-column>
               <el-table-column label="卸货 kg" min-width="100">
                 <template #default="scope">{{ formatNumber(scope.row.unloadKg, 0) }}</template>
               </el-table-column>

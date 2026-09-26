@@ -9,33 +9,66 @@ import { useBerthStatus } from '../hooks/useBerthStatus';
 import BerthGrid from '../components/common/BerthGrid.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
-import { CALL_TYPES, VISA_STATUSES, emptyCallDraft, type CallDraft, type CallType } from '../types/call';
+import {
+  CALL_TYPES,
+  VISA_STATUSES,
+  callBerthText,
+  emptyCallDraft,
+  type CallDraft,
+  type PortCall,
+  type ShiftDraft,
+} from '../types/call';
 import { formatDateTime, formatNumber, isToday, nowLocalInputValue, toPlain } from '../utils/format';
 
 interface CallForm extends CallDraft {
+  /** 进港 / 出港选择的泊位所属渔港 id */
   portId: string;
+  /** 移泊：原泊位 */
+  fromPortId: string;
+  fromBerthNo: string;
+  /** 移泊：新泊位 */
+  toPortId: string;
+  toBerthNo: string;
 }
 
 const router = useRouter();
 const portStore = usePortStore();
 const vesselStore = useVesselStore();
 
-const { draft, restored, savedAt, storageKey, persist, restore, clearDraft } = useLocalDraft<CallForm>('call-board', () => ({
-  ...emptyCallDraft(),
-  portId: '',
-  time: nowLocalInputValue(),
-}));
+function emptyForm(): CallForm {
+  return {
+    ...emptyCallDraft(),
+    portId: '',
+    fromPortId: '',
+    fromBerthNo: '',
+    toPortId: '',
+    toBerthNo: '',
+    time: nowLocalInputValue(),
+  };
+}
+
+const { draft, restored, savedAt, storageKey, persist, restore, clearDraft } = useLocalDraft<CallForm>('call-board', emptyForm);
 const form = draft;
 
 const formRef = ref<FormInstance>();
 const submitting = ref(false);
 const focusPortId = ref('');
 
-const rules: FormRules = {
-  vesselId: [{ required: true, message: '请选择渔船', trigger: 'change' }],
-  portId: [{ required: true, message: '请选择泊位', trigger: 'change' }],
-  time: [{ required: true, message: '请选择进出港时间', trigger: 'change' }],
-};
+const isShift = computed(() => form.value.type === '移泊');
+
+const rules = computed<FormRules>(() => {
+  const map: FormRules = {
+    vesselId: [{ required: true, message: '请选择渔船', trigger: 'change' }],
+    time: [{ required: true, message: '请选择时间', trigger: 'change' }],
+  };
+  if (isShift.value) {
+    map.fromBerthNo = [{ required: true, message: '请选择原泊位', trigger: 'change' }];
+    map.toBerthNo = [{ required: true, message: '请选择新泊位', trigger: 'change' }];
+  } else {
+    map.portId = [{ required: true, message: '请选择泊位', trigger: 'change' }];
+  }
+  return map;
+});
 
 const vesselOptions = computed(() => vesselStore.vessels);
 
@@ -64,6 +97,58 @@ const berthKey = computed({
   },
 });
 
+/** 移泊：该船当前正在占用的泊位（可能分布在多座渔港） */
+const vesselOccupiedBerths = computed(() =>
+  form.value.vesselId
+    ? portStore.berths.filter((b) => b.status === '占用' && b.vesselId === form.value.vesselId)
+    : [],
+);
+
+const fromBerthOptions = computed(() =>
+  vesselOccupiedBerths.value
+    .map((b) => ({
+      value: `${b.portId}|${b.berthNo}`,
+      label: `${portStore.portById(b.portId)?.name ?? b.portId} · ${b.berthNo}`,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
+);
+
+const fromBerthKey = computed({
+  get: () =>
+    form.value.fromPortId && form.value.fromBerthNo ? `${form.value.fromPortId}|${form.value.fromBerthNo}` : '',
+  set: (key: string) => {
+    const [portId, berthNo] = String(key).split('|');
+    form.value.fromPortId = portId ?? '';
+    form.value.fromBerthNo = berthNo ?? '';
+    // 原泊位渔港一旦变化，先前选的新泊位一定失效，连同清空
+    form.value.toPortId = '';
+    form.value.toBerthNo = '';
+    focusPortId.value = portId ?? '';
+  },
+});
+
+/** 移泊：新泊位只能从原泊位所在渔港的空闲泊位里选 */
+const toBerthOptions = computed(() => {
+  if (!form.value.fromPortId) return [];
+  return portStore.berths
+    .filter((b) => b.portId === form.value.fromPortId && b.status === '空闲')
+    .map((b) => ({
+      value: `${b.portId}|${b.berthNo}`,
+      label: b.berthNo,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+});
+
+const toBerthKey = computed({
+  get: () => (form.value.toPortId && form.value.toBerthNo ? `${form.value.toPortId}|${form.value.toBerthNo}` : ''),
+  set: (key: string) => {
+    const [portId, berthNo] = String(key).split('|');
+    form.value.toPortId = portId ?? '';
+    form.value.toBerthNo = berthNo ?? '';
+    focusPortId.value = portId ?? '';
+  },
+});
+
 const focusBerths = computed<Berth[]>(() =>
   focusPortId.value ? portStore.berthsOf(focusPortId.value) : [],
 );
@@ -81,10 +166,16 @@ const todayStats = computed(() => ({
   unload: todayCalls.value.reduce((sum, c) => sum + c.unloadKg, 0),
 }));
 
+function callTagType(call: PortCall): 'primary' | 'success' | 'warning' {
+  return call.type === '进港' ? 'primary' : call.type === '移泊' ? 'warning' : 'success';
+}
+
 function hasContent(value: CallForm): boolean {
   return (
     Boolean(value.vesselId) ||
     Boolean(value.berthNo) ||
+    Boolean(value.fromBerthNo) ||
+    Boolean(value.toBerthNo) ||
     Number(value.iceKg) > 0 ||
     Number(value.fuelL) > 0 ||
     Number(value.unloadKg) > 0
@@ -102,7 +193,7 @@ onMounted(async () => {
       clearDraft();
     }
   }
-  if (form.value.portId) focusPortId.value = form.value.portId;
+  focusPortId.value = form.value.portId || form.value.fromPortId;
 });
 
 watch(
@@ -115,15 +206,65 @@ watch(
   { deep: true },
 );
 
+// 切换登记类型后泊位可选域完全不同，清空已选泊位避免带入非法值
 watch(
   () => form.value.type,
-  (type: CallType) => {
-    const valid = berthOptions.value.some((opt) => opt.value === berthKey.value);
-    if (!valid) berthKey.value = '';
+  (type) => {
+    form.value.portId = '';
+    form.value.berthNo = '';
+    form.value.fromPortId = '';
+    form.value.fromBerthNo = '';
+    form.value.toPortId = '';
+    form.value.toBerthNo = '';
+    // 切到移泊时，把网格聚焦到该船正在占用泊位的渔港，方便直接核对
+    focusPortId.value = type === '移泊' ? (vesselOccupiedBerths.value[0]?.portId ?? '') : '';
   },
 );
 
+// 移泊模式下更换渔船，原 / 新泊位选择一并作废，并把网格聚焦到该船占用泊位所在渔港
+watch(
+  () => form.value.vesselId,
+  () => {
+    if (!isShift.value) return;
+    form.value.fromPortId = '';
+    form.value.fromBerthNo = '';
+    form.value.toPortId = '';
+    form.value.toBerthNo = '';
+    focusPortId.value = vesselOccupiedBerths.value[0]?.portId ?? '';
+  },
+);
+
+// 泊位数据变化（如被释放 / 占用）时，清掉已失效的移泊选择
+watch(fromBerthOptions, (opts) => {
+  if (isShift.value && fromBerthKey.value && !opts.some((o) => o.value === fromBerthKey.value)) {
+    form.value.fromPortId = '';
+    form.value.fromBerthNo = '';
+    form.value.toPortId = '';
+    form.value.toBerthNo = '';
+  }
+});
+
+watch(toBerthOptions, (opts) => {
+  if (isShift.value && toBerthKey.value && !opts.some((o) => o.value === toBerthKey.value)) {
+    form.value.toPortId = '';
+    form.value.toBerthNo = '';
+  }
+});
+
 function selectBerth(berth: Berth): void {
+  if (isShift.value) {
+    const key = `${berth.portId}|${berth.berthNo}`;
+    if (berth.status === '占用' && berth.vesselId === form.value.vesselId) {
+      fromBerthKey.value = key;
+      ElMessage.info(`原泊位已选择 ${berth.berthNo}`);
+    } else if (berth.status === '空闲' && berth.portId === form.value.fromPortId) {
+      toBerthKey.value = key;
+      ElMessage.info(`新泊位已选择 ${berth.berthNo}`);
+    } else {
+      ElMessage.warning('移泊时：原泊位须是该船正在占用的泊位，新泊位须是同一渔港的空闲泊位');
+    }
+    return;
+  }
   berthKey.value = `${berth.portId}|${berth.berthNo}`;
   ElMessage.info(`已选择 ${berth.berthNo}`);
 }
@@ -138,26 +279,37 @@ async function submit(): Promise<void> {
   }
   submitting.value = true;
   try {
-    const payload: CallDraft = {
-      vesselId: form.value.vesselId,
-      type: form.value.type,
-      time: form.value.time,
-      berthNo: form.value.berthNo,
-      iceKg: Number(form.value.iceKg) || 0,
-      fuelL: Number(form.value.fuelL) || 0,
-      unloadKg: Number(form.value.unloadKg) || 0,
-      visaStatus: form.value.visaStatus,
-    };
-    const call = await portStore.registerCall(payload, selectedVessel.value.name, form.value.portId);
-    ElMessage.success(`已登记 ${call.vesselName} ${call.type} · 泊位 ${call.berthNo}`);
+    if (isShift.value) {
+      const payload: ShiftDraft = {
+        vesselId: form.value.vesselId,
+        time: form.value.time,
+        fromPortId: form.value.fromPortId,
+        fromBerthNo: form.value.fromBerthNo,
+        toPortId: form.value.toPortId,
+        toBerthNo: form.value.toBerthNo,
+        visaStatus: form.value.visaStatus,
+      };
+      const call = await portStore.registerShift(payload, selectedVessel.value.name);
+      ElMessage.success(`已登记 ${call.vesselName} 移泊 · ${call.fromBerthNo}→${call.berthNo}`);
+    } else {
+      const payload: CallDraft = {
+        vesselId: form.value.vesselId,
+        type: form.value.type,
+        time: form.value.time,
+        berthNo: form.value.berthNo,
+        iceKg: Number(form.value.iceKg) || 0,
+        fuelL: Number(form.value.fuelL) || 0,
+        unloadKg: Number(form.value.unloadKg) || 0,
+        visaStatus: form.value.visaStatus,
+      };
+      const call = await portStore.registerCall(payload, selectedVessel.value.name, form.value.portId);
+      ElMessage.success(`已登记 ${call.vesselName} ${call.type} · 泊位 ${call.berthNo}`);
+    }
     clearDraft();
-    Object.assign(form.value, {
-      ...emptyCallDraft(),
-      portId: '',
-      time: nowLocalInputValue(),
-    });
+    Object.assign(form.value, emptyForm());
     focusPortId.value = '';
   } catch (error) {
+    // registerShift 在事务内校验失败会整体回滚：流水不写入、原泊位占用关系保留
     ElMessage.error(`登记失败：${(error as Error).message}`);
   } finally {
     submitting.value = false;
@@ -175,7 +327,7 @@ function openVessel(vesselId: string): void {
       <div>
         <h1>进出港登记</h1>
         <p class="page__sub">
-          选择渔船与进出港类型，填写泊位号、加冰量、加油量与卸货量，提交后自动同步泊位占用状态
+          选择渔船与登记类型：进港 / 出港同步泊位占用，移泊可在同一渔港内把船从原泊位置换到空闲新泊位
         </p>
       </div>
     </header>
@@ -210,13 +362,13 @@ function openVessel(vesselId: string): void {
               </el-select>
             </el-form-item>
 
-            <el-form-item label="进出港类型" prop="type">
+            <el-form-item label="登记类型" prop="type">
               <el-radio-group v-model="form.type" data-testid="call-type">
                 <el-radio-button v-for="t in CALL_TYPES" :key="t" :value="t">{{ t }}</el-radio-button>
               </el-radio-group>
             </el-form-item>
 
-            <el-form-item label="时间" prop="time">
+            <el-form-item :label="isShift ? '移泊时间' : '时间'" prop="time">
               <el-date-picker
                 id="call-time"
                 v-model="form.time"
@@ -227,7 +379,7 @@ function openVessel(vesselId: string): void {
               />
             </el-form-item>
 
-            <el-form-item label="泊位号" prop="portId">
+            <el-form-item v-if="!isShift" label="泊位号" prop="portId">
               <el-select
                 id="call-berth"
                 v-model="berthKey"
@@ -239,7 +391,36 @@ function openVessel(vesselId: string): void {
               </el-select>
             </el-form-item>
 
-            <el-row :gutter="12">
+            <template v-else>
+              <el-form-item label="原泊位" prop="fromBerthNo">
+                <el-select
+                  id="shift-from-berth"
+                  v-model="fromBerthKey"
+                  placeholder="选择该船正在占用的泊位"
+                  style="width: 100%"
+                  data-testid="shift-from-berth"
+                >
+                  <el-option v-for="opt in fromBerthOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="新泊位" prop="toBerthNo">
+                <el-select
+                  id="shift-to-berth"
+                  v-model="toBerthKey"
+                  :placeholder="form.fromPortId ? '选择同港空闲泊位' : '请先选择原泊位'"
+                  :disabled="!form.fromPortId"
+                  style="width: 100%"
+                  data-testid="shift-to-berth"
+                >
+                  <el-option v-for="opt in toBerthOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+              </el-form-item>
+              <p v-if="form.vesselId && !fromBerthOptions.length" class="detail-hint shift-hint" data-testid="shift-no-berth">
+                该船当前没有占用中的泊位，无法办理移泊（可能已出港，或原泊位已被释放）。
+              </p>
+            </template>
+
+            <el-row v-if="!isShift" :gutter="12">
               <el-col :span="8">
                 <el-form-item label="加冰 kg" prop="iceKg">
                   <el-input-number id="call-ice" v-model="form.iceKg" :min="0" :max="20000" :step="50" style="width: 100%" />
@@ -264,7 +445,9 @@ function openVessel(vesselId: string): void {
             </el-form-item>
 
             <el-form-item>
-              <el-button type="primary" :loading="submitting" data-testid="submit-call" @click="submit">保存登记</el-button>
+              <el-button type="primary" :loading="submitting" data-testid="submit-call" @click="submit">
+                {{ isShift ? '保存移泊' : '保存登记' }}
+              </el-button>
               <el-button data-testid="clear-draft" @click="clearDraft(); ElMessage.success('草稿已清空')">清空草稿</el-button>
               <el-button v-if="selectedVessel" text type="primary" @click="openVessel(selectedVessel.id)">查看渔船档案</el-button>
             </el-form-item>
@@ -307,11 +490,17 @@ function openVessel(vesselId: string): void {
       <template #header><span class="card-title">今日流水（{{ todayCalls.length }} 条）</span></template>
       <el-table :data="todayCalls" size="small" border empty-text="今日暂无进出港流水" data-testid="today-calls">
         <el-table-column prop="vesselName" label="船名" min-width="130" />
-        <el-table-column prop="type" label="类型" width="80" />
+        <el-table-column label="类型" width="80">
+          <template #default="scope">
+            <el-tag size="small" :type="callTagType(scope.row)">{{ scope.row.type }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="时间" min-width="150">
           <template #default="scope">{{ formatDateTime(scope.row.time) }}</template>
         </el-table-column>
-        <el-table-column prop="berthNo" label="泊位号" width="90" />
+        <el-table-column label="泊位号" min-width="100">
+          <template #default="scope">{{ callBerthText(scope.row) }}</template>
+        </el-table-column>
         <el-table-column label="加冰 kg" min-width="100">
           <template #default="scope">{{ formatNumber(scope.row.iceKg, 0) }}</template>
         </el-table-column>
@@ -376,5 +565,8 @@ function openVessel(vesselId: string): void {
   margin: 10px 0 0;
   font-size: 12px;
   color: #6b7c8c;
+}
+.shift-hint {
+  color: #c45656;
 }
 </style>

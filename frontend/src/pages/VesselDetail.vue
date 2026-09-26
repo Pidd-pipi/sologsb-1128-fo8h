@@ -5,7 +5,7 @@ import { useVesselStore } from '../stores/vesselStore';
 import { usePortStore } from '../stores/portStore';
 import VesselSpecTable from '../components/common/VesselSpecTable.vue';
 import EmptyState from '../components/common/EmptyState.vue';
-import type { PortCall } from '../types/call';
+import { callBerthText, type PortCall } from '../types/call';
 import { daysUntilExpiry, expiryText, powerTier, tonnageTier } from '../utils/tonnage';
 import { formatDateTime, formatNumber } from '../utils/format';
 
@@ -47,8 +47,8 @@ const totals = computed(() => ({
   unload: calls.value.reduce((sum, c) => sum + c.unloadKg, 0),
 }));
 
-function timelineType(call: PortCall): 'primary' | 'success' {
-  return call.type === '进港' ? 'primary' : 'success';
+function timelineType(call: PortCall): 'primary' | 'success' | 'warning' {
+  return call.type === '进港' ? 'primary' : call.type === '移泊' ? 'warning' : 'success';
 }
 
 async function bootstrap(): Promise<void> {
@@ -133,8 +133,8 @@ watch(vesselId, bootstrap);
             placement="top"
           >
             <div class="timeline-row">
-              <el-tag size="small" :type="call.type === '进港' ? 'primary' : 'success'">{{ call.type }}</el-tag>
-              <span>泊位 {{ call.berthNo }}</span>
+              <el-tag size="small" :type="call.type === '进港' ? 'primary' : call.type === '移泊' ? 'warning' : 'success'">{{ call.type }}</el-tag>
+              <span>泊位 {{ callBerthText(call) }}</span>
               <span>加冰 {{ formatNumber(call.iceKg, 0) }} kg</span>
               <span>加油 {{ formatNumber(call.fuelL, 0) }} L</span>
               <span>卸货 {{ formatNumber(call.unloadKg, 0) }} kg</span>

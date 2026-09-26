@@ -4,7 +4,7 @@ import { db } from '../db';
 import { toPlain, uid } from '../utils/format';
 import { emptyPortFilter, type FishingPort, type PortFilter, type SupplyCapability } from '../types/port';
 import type { Berth, BerthStatus } from '../types/berth';
-import type { CallDraft, PortCall } from '../types/call';
+import type { CallDraft, PortCall, ShiftDraft } from '../types/call';
 import { buildBerthRecords } from '../db/berth';
 
 export interface PortInput {
@@ -187,6 +187,84 @@ export const usePortStore = defineStore('port', () => {
     return call;
   }
 
+  /**
+   * 登记一次移泊：同一渔港内把船从原泊位置换到新泊位。
+   * 在同一事务内完成「写流水 + 释放原泊位 + 占用新泊位」，任一校验失败整体回滚、保留原记录。
+   * @throws Error 带中文原因：原泊位已释放 / 不属该船 / 两泊位不在同一渔港 / 新泊位被占用
+   */
+  async function registerShift(draft: ShiftDraft, vesselName: string): Promise<PortCall> {
+    // 用对象承载事务内产物：TS 控制流不跟踪闭包内对 let 的赋值，但会保留对象属性类型
+    const result: { call?: PortCall; freed?: Berth; occupied?: Berth } = {};
+    await db.transaction('rw', db.calls, db.berths, async () => {
+      // 事务内从库里重新读取，避免页面数据过期导致误判
+      const fromBerth = await db.berths.get(`${draft.fromPortId}-${draft.fromBerthNo}`);
+      const toBerth = await db.berths.get(`${draft.toPortId}-${draft.toBerthNo}`);
+
+      if (!fromBerth || fromBerth.status !== '占用') {
+        throw new Error(`原泊位 ${draft.fromBerthNo} 已被释放，当前不是占用状态`);
+      }
+      if (fromBerth.vesselId !== draft.vesselId) {
+        throw new Error(`原泊位 ${draft.fromBerthNo} 上不是该船（当前为 ${fromBerth.vesselName ?? '其他船舶'}），不能代为移泊`);
+      }
+      if (!toBerth || toBerth.portId !== fromBerth.portId) {
+        throw new Error('两处泊位不在同一渔港，不能办理移泊');
+      }
+      if (fromBerth.berthNo === toBerth.berthNo) {
+        throw new Error('原泊位与新泊位相同，无需移泊');
+      }
+      if (toBerth.status !== '空闲') {
+        throw new Error(`新泊位 ${toBerth.berthNo} 已被占用${toBerth.vesselName ? `（${toBerth.vesselName}）` : ''}，请改选空闲泊位`);
+      }
+
+      const time = draft.time ? new Date(draft.time).toISOString() : new Date().toISOString();
+      const call: PortCall = {
+        id: uid('c'),
+        vesselId: draft.vesselId,
+        vesselName,
+        type: '移泊',
+        time,
+        berthNo: toBerth.berthNo,
+        fromBerthNo: fromBerth.berthNo,
+        iceKg: 0,
+        fuelL: 0,
+        unloadKg: 0,
+        visaStatus: draft.visaStatus,
+        createdAt: new Date().toISOString(),
+      };
+      await db.calls.put(toPlain(call));
+
+      const freed: Berth = {
+        ...fromBerth,
+        status: '空闲',
+        vesselId: null,
+        vesselName: null,
+        berthAt: null,
+        leaveAt: time,
+      };
+      const occupied: Berth = {
+        ...toBerth,
+        status: '占用',
+        vesselId: draft.vesselId,
+        vesselName,
+        berthAt: time,
+        leaveAt: null,
+      };
+      await db.berths.put(toPlain(freed));
+      await db.berths.put(toPlain(occupied));
+      result.call = call;
+      result.freed = freed;
+      result.occupied = occupied;
+    });
+    // 事务提交成功后再同步内存状态；校验失败时事务回滚，原有占用关系原样保留
+    const { call, freed: nextFrom, occupied: nextTo } = result;
+    if (!call || !nextFrom || !nextTo) throw new Error('移泊登记未完成，请重试');
+    berths.value = berths.value.map((b) =>
+      b.id === nextFrom.id ? nextFrom : b.id === nextTo.id ? nextTo : b,
+    );
+    calls.value = [...calls.value, call];
+    return call;
+  }
+
   return {
     ports,
     berths,
@@ -205,5 +283,6 @@ export const usePortStore = defineStore('port', () => {
     setBerthStatus,
     updatePort,
     registerCall,
+    registerShift,
   };
 });
